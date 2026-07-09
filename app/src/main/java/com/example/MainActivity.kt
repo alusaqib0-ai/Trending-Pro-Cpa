@@ -68,7 +68,7 @@ enum class AuthMode {
 
 // Bottom Tabs
 enum class Tab {
-    Home, Earn, Team, Wallet, Account
+    Home, Earn, Team, Wallet, Account, Admin
 }
 
 // Plan model matching HTML dataset
@@ -143,6 +143,12 @@ class AppViewModel(private val repository: AppRepository) : ViewModel() {
     init {
         // Start live update clock for timers & dynamic profits
         startTicker()
+        viewModelScope.launch {
+            val existingAdmin = repository.getUserByUsername("admin")
+            if (existingAdmin == null) {
+                repository.insertUser(User("admin", "admin123", 100000.0, null, 0.0))
+            }
+        }
     }
 
     private fun startTicker() {
@@ -172,7 +178,9 @@ class AppViewModel(private val repository: AppRepository) : ViewModel() {
         viewModelScope.launch {
             val existingUser = repository.getUserByUsername(username)
             if (authMode.value == AuthMode.Register) {
-                if (existingUser != null) {
+                if (username.lowercase() == "admin") {
+                    Toast.makeText(context, "Admin username register nahi kiya ja sakta!", Toast.LENGTH_LONG).show()
+                } else if (existingUser != null) {
                     Toast.makeText(context, "Username already exists. Please login.", Toast.LENGTH_LONG).show()
                 } else {
                     var refByUser: String? = null
@@ -180,12 +188,6 @@ class AppViewModel(private val repository: AppRepository) : ViewModel() {
                         val referrer = repository.getUserByUsername(referralCode)
                         if (referrer != null) {
                             refByUser = referrer.username
-                            // Give referrer Rs. 300 referral bonus!
-                            val updatedReferrer = referrer.copy(
-                                balance = referrer.balance + 300.0,
-                                referralEarnings = referrer.referralEarnings + 300.0
-                            )
-                            repository.updateUser(updatedReferrer)
                         } else {
                             Toast.makeText(context, "Referral code incorrect! Baghair referral ke register ho raha hai.", Toast.LENGTH_SHORT).show()
                         }
@@ -194,7 +196,7 @@ class AppViewModel(private val repository: AppRepository) : ViewModel() {
                     val newUser = User(
                         username = username, 
                         passwordHash = password, 
-                        balance = 1500.0, 
+                        balance = 0.0, 
                         referredBy = refByUser
                     )
                     repository.insertUser(newUser)
@@ -202,9 +204,9 @@ class AppViewModel(private val repository: AppRepository) : ViewModel() {
                     onUserLoggedIn(username)
                     
                     if (refByUser != null) {
-                        Toast.makeText(context, "Registration Success! Rs. 1,500 credited & Rs. 300 referral bonus given to $refByUser!", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, "Registration Success! Account created successfully under $refByUser.", Toast.LENGTH_LONG).show()
                     } else {
-                        Toast.makeText(context, "Registration Success! Demo Rs. 1,500 credited.", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "Registration Success! Account created successfully.", Toast.LENGTH_SHORT).show()
                     }
                 }
             } else {
@@ -231,15 +233,27 @@ class AppViewModel(private val repository: AppRepository) : ViewModel() {
 
         depositsJob?.cancel()
         depositsJob = viewModelScope.launch {
-            repository.getDepositsForUserFlow(username).collect {
-                deposits.value = it
+            if (username.lowercase() == "admin") {
+                repository.getAllDepositsFlow().collect {
+                    deposits.value = it
+                }
+            } else {
+                repository.getDepositsForUserFlow(username).collect {
+                    deposits.value = it
+                }
             }
         }
 
         withdrawalsJob?.cancel()
         withdrawalsJob = viewModelScope.launch {
-            repository.getWithdrawalsForUserFlow(username).collect {
-                withdrawals.value = it
+            if (username.lowercase() == "admin") {
+                repository.getAllWithdrawalsFlow().collect {
+                    withdrawals.value = it
+                }
+            } else {
+                repository.getWithdrawalsForUserFlow(username).collect {
+                    withdrawals.value = it
+                }
             }
         }
 
@@ -329,20 +343,61 @@ class AppViewModel(private val repository: AppRepository) : ViewModel() {
         }
     }
 
-    // Demo feature for instant self-approval of deposits (prevents dead end)
-    fun simulateApproveDeposit(deposit: DepositRequest, context: Context) {
-        val user = loggedInUser.value ?: return
+    fun adminApproveDeposit(deposit: DepositRequest, context: Context) {
         viewModelScope.launch {
-            // Update deposit status to Approved
             val updatedDeposit = deposit.copy(status = "APPROVED")
             repository.updateDeposit(updatedDeposit)
 
-            // Credit the amount to user's persistent balance
-            val updatedUser = user.copy(balance = user.balance + deposit.amount)
-            repository.updateUser(updatedUser)
-            loggedInUser.value = updatedUser
+            // Find the target user and credit their balance
+            val targetUser = repository.getUserByUsername(deposit.username)
+            if (targetUser != null) {
+                val updatedUser = targetUser.copy(balance = targetUser.balance + deposit.amount)
+                repository.updateUser(updatedUser)
+                // If the target user is currently the logged-in user, update state
+                if (loggedInUser.value?.username == deposit.username) {
+                    loggedInUser.value = updatedUser
+                }
+                Toast.makeText(context, "Deposit of Rs. ${deposit.amount} for ${deposit.username} Approved!", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(context, "User not found!", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
-            Toast.makeText(context, "Deposit of Rs. ${deposit.amount} successfully approved in Demo Mode!", Toast.LENGTH_SHORT).show()
+    fun adminRejectDeposit(deposit: DepositRequest, context: Context) {
+        viewModelScope.launch {
+            val updatedDeposit = deposit.copy(status = "REJECTED")
+            repository.updateDeposit(updatedDeposit)
+            Toast.makeText(context, "Deposit of Rs. ${deposit.amount} for ${deposit.username} Rejected!", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun adminApproveWithdrawal(withdrawal: Withdrawal, context: Context) {
+        viewModelScope.launch {
+            val updatedWithdrawal = withdrawal.copy(status = "APPROVED")
+            repository.updateWithdrawal(updatedWithdrawal)
+            Toast.makeText(context, "Withdrawal of Rs. ${withdrawal.amount} for ${withdrawal.username} Approved!", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun adminRejectWithdrawal(withdrawal: Withdrawal, context: Context) {
+        viewModelScope.launch {
+            val updatedWithdrawal = withdrawal.copy(status = "REJECTED")
+            repository.updateWithdrawal(updatedWithdrawal)
+
+            // Refund the withdrawn amount back to the user's balance
+            val targetUser = repository.getUserByUsername(withdrawal.username)
+            if (targetUser != null) {
+                val updatedUser = targetUser.copy(balance = targetUser.balance + withdrawal.amount)
+                repository.updateUser(updatedUser)
+                // If the target user is currently the logged-in user, update state
+                if (loggedInUser.value?.username == withdrawal.username) {
+                    loggedInUser.value = updatedUser
+                }
+                Toast.makeText(context, "Withdrawal of Rs. ${withdrawal.amount} for ${withdrawal.username} Rejected & Balance Refunded!", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(context, "User not found! Withdrawal marked as REJECTED.", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -389,14 +444,14 @@ class AppViewModel(private val repository: AppRepository) : ViewModel() {
             repository.updateUser(updatedUser)
             loggedInUser.value = updatedUser
 
-            // Add simulated approved/pending withdraw transaction record
+            // Add simulated pending withdraw transaction record
             val withdrawRecord = Withdrawal(
                 username = user.username,
                 amount = amount,
                 paymentMethod = finalPaymentMethod,
                 accountNumber = number,
                 accountName = accountTitle,
-                status = "APPROVED",
+                status = "PENDING",
                 timestamp = System.currentTimeMillis()
             )
             repository.insertWithdrawal(withdrawRecord)
@@ -406,34 +461,50 @@ class AppViewModel(private val repository: AppRepository) : ViewModel() {
             withdrawAccountNameInput.value = ""
             withdrawBankNameInput.value = ""
             showWithdrawModal.value = false
-            Toast.makeText(context, "Withdrawal request of Rs. $amount approved instantly!", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, "Withdrawal request of Rs. $amount submitted for Admin approval!", Toast.LENGTH_LONG).show()
         }
     }
 
-    fun simulateReferralJoin(context: Context) {
+    fun simulateReferralJoinAndPlan(context: Context) {
         val user = loggedInUser.value ?: return
         viewModelScope.launch {
             val randomSuffix = (1000..9999).random()
             val dummyUsername = "team_user_$randomSuffix"
             
-            // Give this user Rs. 300 referral bonus!
-            val updatedUser = user.copy(
-                balance = user.balance + 300.0,
-                referralEarnings = user.referralEarnings + 300.0
-            )
-            repository.updateUser(updatedUser)
-            loggedInUser.value = updatedUser
-
             // Insert the dummy referred user
             val dummyUser = User(
                 username = dummyUsername,
                 passwordHash = "password123",
-                balance = 1500.0,
+                balance = 0.0,
                 referredBy = user.username
             )
             repository.insertUser(dummyUser)
 
-            Toast.makeText(context, "Demo Referral! $dummyUsername joined. Rs. 300 credited to your balance!", Toast.LENGTH_LONG).show()
+            // Simulate this dummy user activating a Plan (e.g., Plan 1 of Rs. 3,000)
+            val testPlanIndex = 1 // Plan 1
+            val testPlan = ALL_PLANS[testPlanIndex]
+            
+            // Save active plan for the dummy user to Room
+            val activePlan = ActivePlan(
+                username = dummyUsername,
+                planIndex = testPlan.index,
+                planName = testPlan.name,
+                depositAmount = testPlan.deposit.toDouble(),
+                dailyProfit = testPlan.dailyProfit.toDouble(),
+                activationTime = System.currentTimeMillis()
+            )
+            repository.insertActivePlan(activePlan)
+
+            // 13% Referral bonus to the referrer (the loggedInUser!)
+            val bonus = testPlan.deposit * 0.13
+            val updatedUser = user.copy(
+                balance = user.balance + bonus,
+                referralEarnings = user.referralEarnings + bonus
+            )
+            repository.updateUser(updatedUser)
+            loggedInUser.value = updatedUser
+
+            Toast.makeText(context, "Demo! $dummyUsername joined and activated ${testPlan.name}. Rs. ${"%,.0f".format(bonus)} (13% Plan Commission) credited to your balance!", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -441,7 +512,7 @@ class AppViewModel(private val repository: AppRepository) : ViewModel() {
         val user = loggedInUser.value ?: return
 
         if (user.balance < plan.deposit) {
-            Toast.makeText(context, "Insufficient Balance! Kindly EasyPaisa deposit karein ya free demo request approve karein.", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, "Insufficient Balance! Kindly EasyPaisa deposit karein.", Toast.LENGTH_LONG).show()
             return
         }
 
@@ -713,11 +784,14 @@ fun DashboardScreen(viewModel: AppViewModel) {
     val tab by viewModel.currentTab.collectAsState()
     val showDeposit by viewModel.showDepositModal.collectAsState()
     val showWithdraw by viewModel.showWithdrawModal.collectAsState()
+    val user by viewModel.loggedInUser.collectAsState()
+    val isAdmin = user?.username?.lowercase() == "admin"
 
     Scaffold(
         bottomBar = {
             BottomNavigationBar(
                 selectedTab = tab,
+                isAdmin = isAdmin,
                 onTabSelected = { viewModel.currentTab.value = it }
             )
         },
@@ -734,6 +808,7 @@ fun DashboardScreen(viewModel: AppViewModel) {
                 Tab.Team -> TeamScreen(viewModel)
                 Tab.Wallet -> WalletScreen(viewModel)
                 Tab.Account -> AccountScreen(viewModel)
+                Tab.Admin -> if (isAdmin) AdminScreen(viewModel) else HomeScreen(viewModel)
             }
 
             // EasyPaisa Deposit Modal Overlay
@@ -750,7 +825,7 @@ fun DashboardScreen(viewModel: AppViewModel) {
 }
 
 @Composable
-fun BottomNavigationBar(selectedTab: Tab, onTabSelected: (Tab) -> Unit) {
+fun BottomNavigationBar(selectedTab: Tab, isAdmin: Boolean, onTabSelected: (Tab) -> Unit) {
     NavigationBar(
         containerColor = BgDark,
         tonalElevation = 8.dp,
@@ -758,13 +833,16 @@ fun BottomNavigationBar(selectedTab: Tab, onTabSelected: (Tab) -> Unit) {
             .height(80.dp)
             .border(width = (0.5).dp, color = FieldBorder.copy(alpha = 0.5f))
     ) {
-        val tabs = listOf(
+        val tabs = mutableListOf(
             Triple(Tab.Home, "Home", Icons.Default.Home),
             Triple(Tab.Earn, "Earn", Icons.Default.TrendingUp),
             Triple(Tab.Team, "Team", Icons.Default.People),
             Triple(Tab.Wallet, "Wallet", Icons.Default.AccountBalanceWallet),
             Triple(Tab.Account, "Account", Icons.Default.Person)
         )
+        if (isAdmin) {
+            tabs.add(Triple(Tab.Admin, "Admin", Icons.Default.Settings))
+        }
 
         tabs.forEach { (tab, label, icon) ->
             val isSelected = selectedTab == tab
@@ -1499,12 +1577,7 @@ fun WalletScreen(viewModel: AppViewModel) {
             ) {
                 items(combinedTransactions) { tx ->
                     TransactionListItem(
-                        tx = tx,
-                        onApproveClick = {
-                            if (tx is TransactionItem.DepositTx) {
-                                viewModel.simulateApproveDeposit(tx.deposit, context)
-                            }
-                        }
+                        tx = tx
                     )
                 }
             }
@@ -1513,7 +1586,7 @@ fun WalletScreen(viewModel: AppViewModel) {
 }
 
 @Composable
-fun TransactionListItem(tx: TransactionItem, onApproveClick: () -> Unit) {
+fun TransactionListItem(tx: TransactionItem) {
     val isWithdraw = tx is TransactionItem.WithdrawalTx
     val amountAbs = kotlin.math.abs(tx.amount)
     val transId = if (tx is TransactionItem.DepositTx) tx.deposit.transId else "WD-${tx.timestamp.toString().takeLast(6)}"
@@ -1582,36 +1655,30 @@ fun TransactionListItem(tx: TransactionItem, onApproveClick: () -> Unit) {
 
                 val statusText = tx.status
                 if (statusText.equals("PENDING", ignoreCase = true)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    Box(
+                        modifier = Modifier
+                            .background(Color(0xFFEAB308).copy(alpha = 0.2f), shape = RoundedCornerShape(6.dp))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .background(Color(0xFFEAB308).copy(alpha = 0.2f), shape = RoundedCornerShape(6.dp))
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                        ) {
-                            Text(
-                                text = "Pending",
-                                color = Color(0xFFFACC15),
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-
-                        // Demo Quick Approval Button to avoid dead end
-                        Button(
-                            onClick = onApproveClick,
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                            modifier = Modifier.height(22.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = PrimaryEmerald,
-                                contentColor = Color.Black
-                            ),
-                            shape = RoundedCornerShape(6.dp)
-                        ) {
-                            Text(text = "Approve (Demo)", fontSize = 8.sp, fontWeight = FontWeight.ExtraBold)
-                        }
+                        Text(
+                            text = "Pending",
+                            color = Color(0xFFFACC15),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                } else if (statusText.equals("REJECTED", ignoreCase = true)) {
+                    Box(
+                        modifier = Modifier
+                            .background(ButtonRed.copy(alpha = 0.15f), shape = RoundedCornerShape(6.dp))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = "Rejected",
+                            color = ButtonRed,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 } else {
                     Box(
@@ -1646,7 +1713,7 @@ fun AccountScreen(viewModel: AppViewModel) {
         ALL_PLANS.getOrNull(it.planIndex)?.deposit ?: 0
     }
     val approvedDepositsSum = deposits.filter { it.status == "APPROVED" }.sumOf { it.amount }
-    val totalWithdrawsSum = withdrawals.sumOf { it.amount }
+    val totalWithdrawsSum = withdrawals.filter { it.status == "APPROVED" }.sumOf { it.amount }
 
     Column(
         modifier = Modifier
@@ -2279,7 +2346,7 @@ fun TeamScreen(viewModel: AppViewModel) {
                     color = TextLight
                 )
                 Text(
-                    text = "Invite friends to register, earn Rs. 300 bonus for signup and 13% commission on plan purchases!",
+                    text = "Invite friends to register and earn 13% commission instantly on every plan they activate!",
                     color = TextMuted,
                     fontSize = 13.sp,
                     modifier = Modifier.padding(top = 4.dp)
@@ -2330,7 +2397,7 @@ fun TeamScreen(viewModel: AppViewModel) {
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "Aapke friends is link se register karenge tu unko Rs. 1500 aur aapko Rs. 300 signup bonus + 13% plan buy commission milega!",
+                        text = "Aapke friends is link se register karenge tu unke plan buy karne par aapko 13% instant commission milega!",
                         fontSize = 12.sp,
                         color = TextMuted,
                         modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
@@ -2377,10 +2444,10 @@ fun TeamScreen(viewModel: AppViewModel) {
                     Button(
                         onClick = {
                             val msg = "*🔥 Trading Pro Earning App!*\n\n" +
-                                    "Daily online profit earn karein. Join karte hi *Rs. 1,500 Free Welcome Bonus* payein!\n\n" +
+                                    "Daily online profit earn karne ke liye abhi register karein!\n\n" +
                                     "👉 *Referral Link:* $referralLink\n" +
                                     "👉 *Referral Code:* $referralCode\n\n" +
-                                    "Invite friends and get Rs. 300 instant signup bonus + *13% lifetime plan commission*!"
+                                    "Invite friends and get *13% lifetime plan commission* instantly on every purchase!"
                             val encoded = URLEncoder.encode(msg, "UTF-8")
                             val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/?text=$encoded"))
                             try {
@@ -2396,38 +2463,6 @@ fun TeamScreen(viewModel: AppViewModel) {
                         Icon(imageVector = Icons.Default.Share, contentDescription = "Share Icon", modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Share via WhatsApp", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    }
-                }
-            }
-        }
-
-        // Demo test referral trigger
-        item {
-            Card(
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = SurfaceDark),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .border(1.dp, PrimaryEmerald.copy(alpha = 0.3f), shape = RoundedCornerShape(20.dp))
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(text = "Demo Mode Tester", color = PrimaryEmerald, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Text(text = "Simulate a friend joining using your code to test your Rs. 300 bonus instantly!", color = TextMuted, fontSize = 11.sp)
-                    }
-                    Button(
-                        onClick = { viewModel.simulateReferralJoin(context) },
-                        colors = ButtonDefaults.buttonColors(containerColor = PrimaryEmerald, contentColor = Color.Black),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.padding(start = 12.dp)
-                    ) {
-                        Text("Test Signup", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -2624,6 +2659,316 @@ fun WhatsAppGroupCard(context: Context, modifier: Modifier = Modifier) {
                     .testTag("whatsapp_group_button")
             ) {
                 Text("Join", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+            }
+        }
+    }
+}
+
+@Composable
+fun AdminScreen(viewModel: AppViewModel) {
+    val deposits by viewModel.deposits.collectAsState()
+    val withdrawals by viewModel.withdrawals.collectAsState()
+    val context = LocalContext.current
+
+    // Admin Tabs: "deposits" or "withdrawals"
+    var selectedAdminTab by remember { mutableStateOf("deposits") }
+
+    val pendingDeposits = deposits.filter { it.status.equals("PENDING", ignoreCase = true) }
+    val pendingWithdrawals = withdrawals.filter { it.status.equals("PENDING", ignoreCase = true) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+    ) {
+        // Title
+        Text(
+            text = "Admin Control Panel",
+            fontSize = 22.sp,
+            fontWeight = FontWeight.ExtraBold,
+            color = TextLight
+        )
+        Text(
+            text = "Approve or Reject customer requests",
+            fontSize = 12.sp,
+            color = TextMuted,
+            modifier = Modifier.padding(top = 4.dp, bottom = 16.dp)
+        )
+
+        // Custom segment control for Tabs
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(CardBg, shape = RoundedCornerShape(12.dp))
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Button(
+                onClick = { selectedAdminTab = "deposits" },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (selectedAdminTab == "deposits") PrimaryEmerald else Color.Transparent,
+                    contentColor = if (selectedAdminTab == "deposits") Color.Black else TextMuted
+                ),
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(vertical = 10.dp)
+            ) {
+                Text(
+                    text = "Deposits (${pendingDeposits.size})",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp
+                )
+            }
+
+            Button(
+                onClick = { selectedAdminTab = "withdrawals" },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (selectedAdminTab == "withdrawals") PrimaryEmerald else Color.Transparent,
+                    contentColor = if (selectedAdminTab == "withdrawals") Color.Black else TextMuted
+                ),
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(vertical = 10.dp)
+            ) {
+                Text(
+                    text = "Withdrawals (${pendingWithdrawals.size})",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Request list
+        if (selectedAdminTab == "deposits") {
+            if (pendingDeposits.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            imageVector = Icons.Default.ReceiptLong,
+                            contentDescription = "No pending deposits",
+                            tint = FieldBorder,
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "No Pending Deposits",
+                            color = TextMuted,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    items(pendingDeposits) { deposit ->
+                        Card(
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = CardBg),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .border(0.5.dp, FieldBorder.copy(alpha = 0.4f), shape = RoundedCornerShape(16.dp))
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Text(
+                                            text = "User: ${deposit.username}",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 15.sp,
+                                            color = TextLight
+                                        )
+                                        Text(
+                                            text = "ID: ${deposit.transId}",
+                                            fontSize = 11.sp,
+                                            color = TextMuted,
+                                            fontFamily = FontFamily.Monospace
+                                        )
+                                    }
+                                    Text(
+                                        text = "Rs. ${deposit.amount}",
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 16.sp,
+                                        color = PrimaryEmerald
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.height(12.dp))
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Button(
+                                        onClick = { viewModel.adminRejectDeposit(deposit, context) },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .border(1.dp, ButtonRed, RoundedCornerShape(10.dp)),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = Color.Transparent,
+                                            contentColor = ButtonRed
+                                        ),
+                                        shape = RoundedCornerShape(10.dp),
+                                        contentPadding = PaddingValues(vertical = 8.dp)
+                                    ) {
+                                        Text("Reject", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
+
+                                    Button(
+                                        onClick = { viewModel.adminApproveDeposit(deposit, context) },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = PrimaryEmerald,
+                                            contentColor = Color.Black
+                                        ),
+                                        shape = RoundedCornerShape(10.dp),
+                                        contentPadding = PaddingValues(vertical = 8.dp)
+                                    ) {
+                                        Text("Approve", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            if (pendingWithdrawals.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            imageVector = Icons.Default.ReceiptLong,
+                            contentDescription = "No pending withdrawals",
+                            tint = FieldBorder,
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "No Pending Withdrawals",
+                            color = TextMuted,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    items(pendingWithdrawals) { withdrawal ->
+                        Card(
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = CardBg),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .border(0.5.dp, FieldBorder.copy(alpha = 0.4f), shape = RoundedCornerShape(16.dp))
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Text(
+                                            text = "User: ${withdrawal.username}",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 15.sp,
+                                            color = TextLight
+                                        )
+                                        Text(
+                                            text = "Method: ${withdrawal.paymentMethod}",
+                                            fontSize = 11.sp,
+                                            color = TextMuted
+                                        )
+                                    }
+                                    Text(
+                                        text = "Rs. ${withdrawal.amount}",
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 16.sp,
+                                        color = ButtonRed
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.height(8.dp))
+
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(BgDark, shape = RoundedCornerShape(8.dp))
+                                        .padding(8.dp)
+                                ) {
+                                    Text(
+                                        text = "Account: ${withdrawal.accountNumber}",
+                                        fontSize = 12.sp,
+                                        color = TextLight,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    Text(
+                                        text = "Title: ${withdrawal.accountName}",
+                                        fontSize = 12.sp,
+                                        color = TextMuted,
+                                        modifier = Modifier.padding(top = 2.dp)
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.height(12.dp))
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Button(
+                                        onClick = { viewModel.adminRejectWithdrawal(withdrawal, context) },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .border(1.dp, ButtonRed, RoundedCornerShape(10.dp)),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = Color.Transparent,
+                                            contentColor = ButtonRed
+                                        ),
+                                        shape = RoundedCornerShape(10.dp),
+                                        contentPadding = PaddingValues(vertical = 8.dp)
+                                    ) {
+                                        Text("Reject", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
+
+                                    Button(
+                                        onClick = { viewModel.adminApproveWithdrawal(withdrawal, context) },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = PrimaryEmerald,
+                                            contentColor = Color.Black
+                                        ),
+                                        shape = RoundedCornerShape(10.dp),
+                                        contentPadding = PaddingValues(vertical = 8.dp)
+                                    ) {
+                                        Text("Approve", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
