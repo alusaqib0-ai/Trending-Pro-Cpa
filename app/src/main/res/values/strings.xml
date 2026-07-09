@@ -1,0 +1,20 @@
+<resources>
+    <string name="app_name">Trading Pro</string>
+    <string name="welcome_back">Welcome Back</string>
+    <string name="login_title">Login to Trading Pro</string>
+    <string name="register_title">Register Trading Pro</string>
+    <string name="login_btn">Login Now</string>
+    <string name="register_btn">Register Account</string>
+    <string name="toggle_login_prompt">Already have an account? Login</string>
+    <string name="toggle_register_prompt">Don\'t have an account? Register</string>
+    <string name="username_hint">Username Likhein</string>
+    <string name="password_hint">Password Likhein</string>
+    <string name="balance_label">Available Balance</string>
+    <string name="deposit_btn">Deposit Cash</string>
+    <string name="withdraw_btn">Withdraw Cash</string>
+    <string name="active_portfolio_label">Active Portfolio</string>
+    <string name="no_active_plans">No active investment plans. Choose a plan under Earn tab!</string>
+    <string name="plans_title">Investment Plans</string>
+    <string name="days_label">Days</string>
+    <string name="daily_profit_label">Daily Profit</string>
+</resources>

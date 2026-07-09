@@ -1,0 +1,6 @@
+{
+  "name": "Trading Pro",
+  "description": "Trading Pro - Invest & Earn. Securely deposit cash and activate investment plans.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
